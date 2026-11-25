@@ -171,6 +171,19 @@ fn (mut lexer Lexer) skip_whitespace() {
 }
 
 @[direct_array_access]
+fn (mut lexer Lexer) skip_to_ch(targets []rune) {
+	for {
+		mut ch := (*lexer.text)[lexer.pos]
+		if ch in targets {
+			return
+		}
+		lexer.pos++
+		lexer.col++
+		lexer.skip_whitespace()
+	}
+}
+
+@[direct_array_access]
 fn (mut lexer Lexer) next() !Token {
 	if lexer.pos >= lexer.text.len {
 		return Token{
@@ -234,6 +247,9 @@ fn (mut lexer Lexer) next() !Token {
 		lexer.col++
 		if ch != s {
 			for ch != s {
+				if lexer.pos == lexer.text.len {
+					return error('reached eof before matching quotation (line: ${lexer.line})')
+				}
 				lexer.pos++
 				lexer.col++
 				ch = (*lexer.text)[lexer.pos]
@@ -282,6 +298,8 @@ fn (mut lexer Lexer) next() !Token {
 		}
 	}
 
+	text := (*lexer.text)[tok.pos..tok.pos + tok.len]
+	println('[${tok.line}:${tok.col}] ${tok.kind}: `${text}`')
 	return tok
 }
 
@@ -312,7 +330,7 @@ fn (mut parser Parser) expect(kind TokenKind) ! {
 	parser.advance()!
 }
 
-fn (mut parser Parser) parse_value() !ValueT {
+fn (mut parser Parser) parse_value(tolerant ?bool) !ValueT {
 	if parser.accept(.str)! {
 		return parser.cur.text(parser.lexer).substr_ni(1, -1)
 	} else if parser.accept(.int)! {
@@ -325,12 +343,42 @@ fn (mut parser Parser) parse_value() !ValueT {
 		return false
 	} else if parser.accept(.obrack)! {
 		mut l := []ValueT{}
+		mut idx := 0
 		for !parser.accept(.cbrack)! {
 			if parser.accept(.eof)! {
-				return error('reached eof before closing bracket (`]`)')
+				return error('reached eof before closing bracket (`]`) (line: ${parser.lexer.line})')
 			}
-			l << parser.parse_value()!
-			parser.accept(.comma)!
+
+			// if parsed_value := parser.parse_value(tolerant) {
+			// 	l << parsed_value
+			// } else {
+			// 	println('running skip')
+			// 	if l.len == idx + 1 {
+			// 		l.pop()
+			// 	}
+			// 	parser.lexer.skip_to_ch(`,`)
+			// 	parser.advance()!
+			// }
+
+
+			if tolerant or { false } {
+				if parsed_value := parser.parse_value(tolerant) {
+					l << parsed_value
+				} else {
+					println('running skip')
+					if l.len == idx + 1 {
+						l.pop()
+					}
+					parser.lexer.skip_to_ch([`,`, `]`])
+					parser.advance()!
+				}
+			} else {
+				l << parser.parse_value(tolerant)!
+			}
+
+			if parser.accept(.comma)! {
+				idx++
+			}
 		}
 		return l
 	} else if parser.accept(.obrace)! {
@@ -339,10 +387,31 @@ fn (mut parser Parser) parse_value() !ValueT {
 			if parser.accept(.eof)! {
 				return error('reached eof before closing brace (`}`)')
 			}
-			parser.expect(.id)!
+			parser.expect(.id) or {
+				parser.lexer.skip_to_ch([`,`, `}`, `\n`])
+				parser.advance()!
+				continue
+			}
+
 			key := parser.cur.text(parser.lexer)
-			parser.expect(.equals)!
-			m[key] = parser.parse_value()!
+
+			parser.expect(.equals) or {
+				parser.lexer.skip_to_ch([`,`, `}`, `\n`])
+				parser.advance()!
+				continue
+			}
+
+			if tolerant or { false } {
+				if parsed_value := parser.parse_value(tolerant) {
+					m[key] = parsed_value
+				} else {
+					parser.lexer.skip_to_ch([`,`, `}`, `\n`])
+					parser.advance()!
+					continue
+				}
+			} else {
+				m[key] = parser.parse_value(tolerant)!
+			}
 			parser.accept(.comma)!
 		}
 		return m
@@ -350,13 +419,13 @@ fn (mut parser Parser) parse_value() !ValueT {
 	return error('failed to parse value')
 }
 
-fn (mut parser Parser) parse_doc() !map[string]ValueT {
+fn (mut parser Parser) parse_doc(tolerant ?bool) !map[string]ValueT {
 	mut m := map[string]ValueT{}
 	for !parser.accept(.eof)! {
 		parser.expect(.id)!
 		key := parser.cur.text(parser.lexer)
 		parser.expect(.equals)!
-		m[key] = parser.parse_value()!
+		m[key] = parser.parse_value(tolerant)!
 		parser.accept(.comma)!
 	}
 	return m
@@ -377,16 +446,16 @@ pub fn deserialize(text string) !ValueT {
 }
 
 // Deserialize text to a map[string]ValueT
-pub fn load(text string) !map[string]ValueT {
+pub fn load(text string, tolerant ?bool) !map[string]ValueT {
 	mut parser := Parser.new(text)
 	parser.advance()!
-	return parser.parse_doc()
+	return parser.parse_doc(tolerant)
 }
 
 // Load a map[string]ValueT from a file
 @[inline]
-pub fn load_file(fp string) !map[string]ValueT {
-	return load(os.read_file(fp)!)!
+pub fn load_file(fp string, tolerant ?bool) !map[string]ValueT {
+	return load(os.read_file(fp)!, tolerant)!
 }
 
 // Serialize data to a string
