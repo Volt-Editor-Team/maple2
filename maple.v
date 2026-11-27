@@ -298,8 +298,8 @@ fn (mut lexer Lexer) next() !Token {
 		}
 	}
 
-	text := (*lexer.text)[tok.pos..tok.pos + tok.len]
-	println('[${tok.line}:${tok.col}] ${tok.kind}: `${text}`')
+	// text := (*lexer.text)[tok.pos..tok.pos + tok.len]
+	// println('[${tok.line}:${tok.col}] ${tok.kind}: `${text}`')
 	return tok
 }
 
